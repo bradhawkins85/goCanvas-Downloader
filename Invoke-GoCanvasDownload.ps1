@@ -26,7 +26,10 @@
     Defaults to a "GoCanvasDownloads" folder in the current working directory.
 
 .PARAMETER PageSize
-    Number of submissions to request per API page. Defaults to 100 (the API maximum).
+    Expected number of items returned per API page. The goCanvas v3 API does
+    not accept a per_page parameter — page size is fixed at the API default
+    of 100 — so this value is used only as the threshold the pagination loop
+    uses to decide whether the last page has been reached. Defaults to 100.
 
 .EXAMPLE
     .\Invoke-GoCanvasDownload.ps1
@@ -95,10 +98,10 @@ $Script:JsonSerializationDepth = 10
 # Number of seconds before token expiry at which a fresh token is requested.
 $Script:TokenRefreshBufferSeconds = 60
 
-# Fallback per_page values tried (in order, largest first) when the API returns
-# 422 on the first page of a form's submissions.  The array MUST be in
-# descending order so that the retry logic selects the next smaller value.
-$Script:FallbackPageSizes = @(10, 1)
+# Fallback per_page values are no longer used — the goCanvas v3 API does
+# not accept a per_page parameter on list endpoints. Retained as an empty
+# array so any references continue to resolve safely.
+$Script:FallbackPageSizes = @()
 
 # ---------------------------------------------------------------------------
 # Helper: obtain (and cache) an OAuth 2.0 Bearer token using the
@@ -407,11 +410,14 @@ function Write-SubmissionsIndex {
 function Get-AllForms {
     $allForms = [System.Collections.Generic.List[object]]::new()
     $page     = 1
+    $forms    = @()
+    $morePages = $true
 
     do {
+        # The goCanvas v3 API does not accept a per_page parameter on the
+        # /forms endpoint — page size is fixed at the API default of 100.
         $query = @{
-            page     = [string]$page
-            per_page = [string]$PageSize
+            page = [string]$page
         }
 
         try {
@@ -432,13 +438,11 @@ function Get-AllForms {
             $allForms.Add($form)
         }
 
-        $rawTotal  = Get-ObjectProperty -Object $result -Name 'total_count'
-        $total     = if ($rawTotal) { [int]$rawTotal } else { $allForms.Count }
-        $fetched   = $allForms.Count
-        $morePages = $fetched -lt $total
+        # The list endpoint returns a JSON array; stop when the page is short.
+        $morePages = $forms.Count -ge $PageSize
 
-        if ($page -eq 1 -and $total -gt $PageSize) {
-            Write-Host "  (Forms list spans multiple pages: $total total forms)" -ForegroundColor Gray
+        if ($page -eq 1 -and $morePages) {
+            Write-Host "  (Forms list spans multiple pages)" -ForegroundColor Gray
         }
 
         $page++
@@ -449,27 +453,28 @@ function Get-AllForms {
 }
 
 # ---------------------------------------------------------------------------
-# Retrieve every page of submissions for a given form (app_id)
-# Returns an array of submission objects
+# Retrieve every page of submissions for a given form (form_id)
+# Returns an array of submission objects.
+#
+# The goCanvas v3 API requires `form_id` (not `app_id`) and does not accept
+# a `per_page` parameter — page size is fixed at the API default of 100.
+# The list endpoint returns a plain JSON array; pagination metadata is
+# delivered via response headers (link / total-count / total-pages), so we
+# detect the final page by checking whether it contained fewer items than
+# the API's default page size.
 # ---------------------------------------------------------------------------
 function Get-AllSubmissions {
-    param ([string]$AppId)
+    param ([string]$FormId)
 
     $allSubmissions = [System.Collections.Generic.List[object]]::new()
     $page           = 1
-    $effectivePageSize = $PageSize
-    $totalExpected  = $null
-    # Initialise the loop-control variables so that a `continue` from the
-    # 422 retry path (which jumps directly to the `while` test before these
-    # are otherwise assigned) does not fail under Set-StrictMode.
     $morePages      = $true
-    $submissions    = @('__retry__')
+    $submissions    = @()
 
     do {
         $query = @{
-            app_id   = $AppId
-            page     = [string]$page
-            per_page = [string]$effectivePageSize
+            form_id = $FormId
+            page    = [string]$page
         }
 
         try {
@@ -478,20 +483,7 @@ function Get-AllSubmissions {
         catch [System.Net.WebException] {
             $statusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
             if ($statusCode -eq 422) {
-                # Some forms reject the current page size.  When we are on page 1
-                # (nothing collected yet) try progressively smaller per_page values
-                # before giving up.  On later pages we have already succeeded with
-                # the current page size, so 422 is likely a transient/data problem;
-                # return whatever was collected rather than discarding it.
-                if ($page -eq 1) {
-                    $nextSize = $Script:FallbackPageSizes | Where-Object { $_ -lt $effectivePageSize } | Select-Object -First 1
-                    if ($null -ne $nextSize) {
-                        Write-Warning "  Form $AppId returned 422 with per_page=$effectivePageSize - retrying with per_page=$nextSize."
-                        $effectivePageSize = $nextSize
-                        continue
-                    }
-                }
-                Write-Warning "  Form $AppId returned 422 (Unprocessable Entity) - skipping form (no accessible submissions or form is archived)."
+                Write-Warning "  Form $FormId returned 422 (Unprocessable Entity) - skipping form (no accessible submissions or form is archived)."
                 return $allSubmissions.ToArray()
             }
             throw
@@ -506,15 +498,16 @@ function Get-AllSubmissions {
             $allSubmissions.Add($sub)
         }
 
-        # Determine whether there are more pages
-        $rawTotal  = Get-ObjectProperty -Object $result -Name 'total_count'
-        $total     = if ($rawTotal) { [int]$rawTotal } else { $allSubmissions.Count }
-        if ($null -eq $totalExpected -and $rawTotal) { $totalExpected = $total }
-        $fetched   = $allSubmissions.Count
-        $morePages = $fetched -lt $total
+        # The v3 API returns at most $PageSize (default 100) items per page,
+        # so a short page indicates we've reached the end.
+        $morePages = $submissions.Count -ge $PageSize
 
-        if ($null -ne $totalExpected -and $totalExpected -gt $effectivePageSize) {
-            Write-Host ("  Fetching submissions: page {0} — {1} / {2} collected" -f $page, $fetched, $totalExpected) `
+        if ($page -eq 1 -and $submissions.Count -ge $PageSize) {
+            Write-Host ("  Fetching submissions: page {0} — {1} collected" -f $page, $allSubmissions.Count) `
+                       -ForegroundColor Gray
+        }
+        elseif ($page -gt 1) {
+            Write-Host ("  Fetching submissions: page {0} — {1} collected" -f $page, $allSubmissions.Count) `
                        -ForegroundColor Gray
         }
 
@@ -711,7 +704,7 @@ function Invoke-Main {
         }
 
         # Retrieve all submissions for this form
-        $submissions = @(Get-AllSubmissions -AppId $appId)
+        $submissions = @(Get-AllSubmissions -FormId $appId)
         Write-Host "  Submissions found: $($submissions.Count)"
 
         # Build the per-form submissions index (CSV) as we go
