@@ -11,7 +11,8 @@
     Authentication uses OAuth 2.0 Client Credentials Flow. You must create an
     OAuth application in your goCanvas profile at
     https://www.gocanvas.com/my_api_settings and supply the resulting
-    Client ID and Client Secret in the CONFIGURATION section of this script.
+    Client ID and Client Secret either in a .env file placed alongside the
+    script (recommended) or directly in the CONFIGURATION section of this script.
 
     Downloaded files are named using the submission's reference id, name,
     user id and status (e.g. "REF001_Site_Inspection_42_complete.pdf").
@@ -44,12 +45,38 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# !! CONFIGURATION — replace these values with your goCanvas OAuth credentials !!
+# CONFIGURATION — credentials can be supplied via a .env file placed in the
+# same directory as this script (preferred) or by editing the fallback values
+# below.  The .env file should contain lines in KEY=VALUE format:
+#
+#   GOCANVAS_CLIENT_ID=your_client_id
+#   GOCANVAS_CLIENT_SECRET=your_client_secret
+#
+# Lines beginning with # and blank lines are ignored.
 # Create an OAuth application at https://www.gocanvas.com/my_api_settings
 # and use the Client Credentials flow (server-to-server).
 # ---------------------------------------------------------------------------
 $Script:ClientId     = 'YOUR_CLIENT_ID'
 $Script:ClientSecret = 'YOUR_CLIENT_SECRET'
+
+$_envFile = Join-Path $PSScriptRoot '.env'
+if (Test-Path $_envFile) {
+    Get-Content $_envFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and $line -notmatch '^\s*#') {
+            $parts = $line -split '=', 2
+            if ($parts.Count -eq 2) {
+                $key   = $parts[0].Trim()
+                $value = $parts[1].Trim().Trim('"', "'")
+                switch ($key) {
+                    'GOCANVAS_CLIENT_ID'     { $Script:ClientId     = $value }
+                    'GOCANVAS_CLIENT_SECRET' { $Script:ClientSecret = $value }
+                }
+            }
+        }
+    }
+}
+Remove-Variable -Name '_envFile'
 # ---------------------------------------------------------------------------
 
 $Script:V3BaseUrl = 'https://api.gocanvas.com/api/v3'
