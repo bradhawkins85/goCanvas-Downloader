@@ -8,6 +8,8 @@ A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.
 - Retrieves every form (app) available in your goCanvas account
 - Iterates through all submissions for each form, handling API pagination automatically
 - Prefers **PDF** format; if PDF is unavailable, downloads **both** CSV and XML
+- Names files using the submission's **reference id**, **name**, **user id** and **status**
+- Writes a per-form **`_submissions_index.csv`** containing every field returned by the API for each submission, plus the resulting filename(s)
 - Organises downloads into sub-folders named after each form
 - Skips files that have already been downloaded (idempotent — safe to run repeatedly)
 
@@ -54,18 +56,34 @@ $Script:ApiPassword = 'YOUR_GOCANVAS_PASSWORD_OR_API_KEY'
 ```
 GoCanvasDownloads\
 ├── Form Name A\
-│   ├── REF001.pdf
-│   ├── REF002.pdf
-│   ├── REF003.csv          ← PDF was unavailable, so both formats downloaded
-│   └── REF003.xml
+│   ├── _submissions_index.csv
+│   ├── REF001_Site_Inspection_42_complete.pdf
+│   ├── REF002_Site_Inspection_42_complete.pdf
+│   ├── REF003_Site_Inspection_17_draft.csv     ← PDF was unavailable, so both formats downloaded
+│   └── REF003_Site_Inspection_17_draft.xml
 └── Form Name B\
-    ├── SUB_456.pdf
-    ├── SUB_789.csv         ← PDF unavailable
-    └── SUB_789.xml
+    ├── _submissions_index.csv
+    ├── SUB_456_Vehicle_Check_8_complete.pdf
+    ├── SUB_789_Vehicle_Check_8_complete.csv    ← PDF unavailable
+    └── SUB_789_Vehicle_Check_8_complete.xml
 ```
 
-File names are derived from the submission's `reference_id`. Any characters that are
-invalid in file names are replaced with underscores.
+File names follow the pattern `{reference_id}_{name}_{user_id}_{status}.{ext}`.
+Any characters that are invalid in file names are replaced with underscores, and
+overly long names are truncated.
+
+### Submissions index CSV
+
+Each form folder contains a `_submissions_index.csv` listing every submission
+retrieved from the API for that form. The CSV includes **all** fields returned
+by the API (nested objects are stored as compact JSON to preserve the data),
+plus three computed columns:
+
+| Column           | Description                                                              |
+|------------------|--------------------------------------------------------------------------|
+| `BaseFileName`   | The sanitised base filename (without extension) used on disk             |
+| `Files`          | Semicolon-separated list of the file(s) saved (e.g. `REF.pdf` or `REF.csv;REF.xml`) |
+| `DownloadStatus` | `Downloaded`, `Skipped` (already on disk), or `Failed`                  |
 
 ## How It Works
 
@@ -78,6 +96,7 @@ invalid in file names are replaced with underscores.
      - `GET /api/v3/submissions/{id}.csv`
      - `GET /api/v3/submissions/{id}.xml`
 5. **Skip existing** – A submission is treated as already downloaded (and skipped) when either the PDF exists, or both the CSV and XML exist on disk.
+6. **Index** – After processing each form, a `_submissions_index.csv` is written into the form folder containing every submission record returned by the API together with its on-disk filename(s) and status.
 
 ## License
 
