@@ -24,16 +24,21 @@ A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.
 
 1. Create an OAuth application in your [goCanvas profile](https://www.gocanvas.com/my_api_settings). Choose the **Client Credentials** flow (server-to-server). Note down the **Client ID** and **Client Secret** that are generated.
 
-2. Open `Invoke-GoCanvasDownload.ps1` in a text editor.
+2. Copy `.env.example` to `.env` in the same directory as the script and fill in your credentials:
 
-3. Find the **CONFIGURATION** section near the top of the script and replace the placeholder values:
+```
+GOCANVAS_CLIENT_ID=your_client_id
+GOCANVAS_CLIENT_SECRET=your_client_secret
+```
+
+The script will automatically load credentials from `.env` at startup. Alternatively, you can still edit the **CONFIGURATION** section of `Invoke-GoCanvasDownload.ps1` directly:
 
 ```powershell
 $Script:ClientId     = 'YOUR_CLIENT_ID'
 $Script:ClientSecret = 'YOUR_CLIENT_SECRET'
 ```
 
-> **Security note:** The credentials are stored directly in the script as described in the requirements. Treat this file as sensitive and avoid committing it with real credentials to source control.
+> **Security note:** Keep your `.env` file private. Add it to `.gitignore` to avoid accidentally committing credentials to source control.
 
 ## Usage
 
