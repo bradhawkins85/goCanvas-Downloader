@@ -95,6 +95,11 @@ $Script:JsonSerializationDepth = 10
 # Number of seconds before token expiry at which a fresh token is requested.
 $Script:TokenRefreshBufferSeconds = 60
 
+# Fallback per_page values tried (in order, largest first) when the API returns
+# 422 on the first page of a form's submissions.  The array MUST be in
+# descending order so that the retry logic selects the next smaller value.
+$Script:FallbackPageSizes = @(10, 1)
+
 # ---------------------------------------------------------------------------
 # Helper: obtain (and cache) an OAuth 2.0 Bearer token using the
 # Client Credentials flow.  The token is reused until it is within
@@ -396,6 +401,54 @@ function Write-SubmissionsIndex {
 }
 
 # ---------------------------------------------------------------------------
+# Retrieve every page of forms (apps) from the API.
+# Returns an array of form objects.
+# ---------------------------------------------------------------------------
+function Get-AllForms {
+    $allForms = [System.Collections.Generic.List[object]]::new()
+    $page     = 1
+
+    do {
+        $query = @{
+            page     = [string]$page
+            per_page = [string]$PageSize
+        }
+
+        try {
+            $result = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/forms" -Query $query
+        }
+        catch [System.Net.WebException] {
+            $statusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            Write-Warning "Failed to retrieve forms page $page [$statusCode] - stopping form list retrieval."
+            break
+        }
+
+        $rawForms = Get-ObjectProperty -Object $result -Name 'forms'
+        $forms = @(if ($rawForms) { $rawForms }
+                   elseif ($result -is [array]) { $result }
+                   else { @() })
+
+        foreach ($form in $forms) {
+            $allForms.Add($form)
+        }
+
+        $rawTotal  = Get-ObjectProperty -Object $result -Name 'total_count'
+        $total     = if ($rawTotal) { [int]$rawTotal } else { $allForms.Count }
+        $fetched   = $allForms.Count
+        $morePages = $fetched -lt $total
+
+        if ($page -eq 1 -and $total -gt $PageSize) {
+            Write-Host "  (Forms list spans multiple pages: $total total forms)" -ForegroundColor Gray
+        }
+
+        $page++
+
+    } while ($morePages -and $forms.Count -gt 0)
+
+    return $allForms.ToArray()
+}
+
+# ---------------------------------------------------------------------------
 # Retrieve every page of submissions for a given form (app_id)
 # Returns an array of submission objects
 # ---------------------------------------------------------------------------
@@ -404,12 +457,14 @@ function Get-AllSubmissions {
 
     $allSubmissions = [System.Collections.Generic.List[object]]::new()
     $page           = 1
+    $effectivePageSize = $PageSize
+    $totalExpected  = $null
 
     do {
         $query = @{
             app_id   = $AppId
             page     = [string]$page
-            per_page = [string]$PageSize
+            per_page = [string]$effectivePageSize
         }
 
         try {
@@ -418,6 +473,19 @@ function Get-AllSubmissions {
         catch [System.Net.WebException] {
             $statusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
             if ($statusCode -eq 422) {
+                # Some forms reject the current page size.  When we are on page 1
+                # (nothing collected yet) try progressively smaller per_page values
+                # before giving up.  On later pages we have already succeeded with
+                # the current page size, so 422 is likely a transient/data problem;
+                # return whatever was collected rather than discarding it.
+                if ($page -eq 1) {
+                    $nextSize = $Script:FallbackPageSizes | Where-Object { $_ -lt $effectivePageSize } | Select-Object -First 1
+                    if ($null -ne $nextSize) {
+                        Write-Warning "  Form $AppId returned 422 with per_page=$effectivePageSize - retrying with per_page=$nextSize."
+                        $effectivePageSize = $nextSize
+                        continue
+                    }
+                }
                 Write-Warning "  Form $AppId returned 422 (Unprocessable Entity) - skipping form (no accessible submissions or form is archived)."
                 return $allSubmissions.ToArray()
             }
@@ -425,19 +493,26 @@ function Get-AllSubmissions {
         }
 
         $rawSubs = Get-ObjectProperty -Object $result -Name 'submissions'
-        $submissions = if ($rawSubs) { $rawSubs }
-                       elseif ($result -is [array]) { $result }
-                       else { @() }
+        $submissions = @(if ($rawSubs) { $rawSubs }
+                         elseif ($result -is [array]) { $result }
+                         else { @() })
 
         foreach ($sub in $submissions) {
             $allSubmissions.Add($sub)
         }
 
         # Determine whether there are more pages
-        $rawTotal   = Get-ObjectProperty -Object $result -Name 'total_count'
-        $total      = if ($rawTotal) { [int]$rawTotal } else { $allSubmissions.Count }
-        $fetched    = $allSubmissions.Count
-        $morePages  = $fetched -lt $total
+        $rawTotal  = Get-ObjectProperty -Object $result -Name 'total_count'
+        $total     = if ($rawTotal) { [int]$rawTotal } else { $allSubmissions.Count }
+        if ($null -eq $totalExpected -and $rawTotal) { $totalExpected = $total }
+        $fetched   = $allSubmissions.Count
+        $morePages = $fetched -lt $total
+
+        if ($null -ne $totalExpected -and $totalExpected -gt $effectivePageSize) {
+            Write-Host ("  Fetching submissions: page {0} — {1} / {2} collected" -f $page, $fetched, $totalExpected) `
+                       -ForegroundColor Gray
+        }
+
         $page++
 
     } while ($morePages -and $submissions.Count -gt 0)
@@ -599,11 +674,7 @@ function Invoke-Main {
     # Step 1 – Retrieve the list of all forms / apps
     # ------------------------------------------------------------------
     Write-Host "Fetching list of forms (apps) ..."
-    $appsResponse = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/forms"
-    $rawApps = Get-ObjectProperty -Object $appsResponse -Name 'forms'
-    $apps = if ($rawApps) { $rawApps }
-            elseif ($appsResponse -is [array]) { $appsResponse }
-            else { @() }
+    $apps = @(Get-AllForms)
 
     if ($apps.Count -eq 0) {
         Write-Warning "No forms/apps found. Verify your credentials and API access."
@@ -635,11 +706,13 @@ function Invoke-Main {
         }
 
         # Retrieve all submissions for this form
-        $submissions = Get-AllSubmissions -AppId $appId
+        $submissions = @(Get-AllSubmissions -AppId $appId)
         Write-Host "  Submissions found: $($submissions.Count)"
 
         # Build the per-form submissions index (CSV) as we go
-        $indexRows = [System.Collections.Generic.List[object]]::new()
+        $indexRows    = [System.Collections.Generic.List[object]]::new()
+        $subCount     = $submissions.Count
+        $subProcessed = 0
 
         foreach ($sub in $submissions) {
             $result = Save-Submission -Submission $sub -FormFolder $formFolder
@@ -660,6 +733,13 @@ function Invoke-Main {
             Add-Member -InputObject $row -NotePropertyName 'DownloadStatus' `
                        -NotePropertyValue $result.Status -Force
             $indexRows.Add($row)
+
+            $subProcessed++
+            if ($subCount -gt 100 -and ($subProcessed % 100 -eq 0 -or $subProcessed -eq $subCount)) {
+                Write-Host ("  Processed {0} / {1} submissions (downloaded: {2}  skipped: {3}  failed: {4})" -f `
+                    $subProcessed, $subCount, $totalDownloaded, $totalSkipped, $totalFailed) `
+                    -ForegroundColor Gray
+            }
         }
 
         # Write the per-form CSV index of all submissions
