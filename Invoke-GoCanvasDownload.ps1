@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     Connects to the goCanvas API v3, retrieves all available submissions across
-    all forms/apps, and downloads each submission as a PDF (preferred), or CSV
-    and XML if a PDF is not available. Already-downloaded files are skipped.
+    all forms/apps, and downloads each submission as a PDF. If a PDF is not
+    available for a submission, BOTH the CSV and XML versions are downloaded
+    instead. Already-downloaded files are skipped.
 
 .PARAMETER OutputPath
     The root folder where downloaded files are saved.
@@ -157,8 +158,48 @@ function Get-AllSubmissions {
 }
 
 # ---------------------------------------------------------------------------
-# Download one submission.  Tries PDF first, then CSV, then XML.
-# Returns the format that was successfully saved, or $null if nothing worked.
+# Try to download a single format for a submission.
+# Returns $true on success (file saved) and $false on failure / unavailable.
+# If a file already exists on disk it is treated as success and not re-downloaded.
+# ---------------------------------------------------------------------------
+function Save-SubmissionFormat {
+    param (
+        [string]$SubmissionId,
+        [string]$FormFolder,
+        [string]$SafeName,
+        [string]$Extension
+    )
+
+    $filePath = Join-Path $FormFolder ('{0}.{1}' -f $SafeName, $Extension)
+
+    if (Test-Path $filePath) {
+        Write-Verbose "  [SKIP] $filePath already exists."
+        return $true
+    }
+
+    $downloadUri = '{0}/submissions/{1}.{2}' -f $Script:V3BaseUrl, $SubmissionId, $Extension
+    Write-Verbose "  Trying $($Extension.ToUpper()): $downloadUri"
+
+    $tmpFile = $filePath + '.tmp'
+    $ok      = Invoke-GoCanvasFileDownload -Uri $downloadUri -OutFile $tmpFile
+
+    if ($ok -and (Test-Path $tmpFile) -and (Get-Item $tmpFile).Length -gt 0) {
+        Move-Item -Path $tmpFile -Destination $filePath
+        Write-Verbose "  [OK]   Saved $filePath"
+        return $true
+    }
+
+    # Remove incomplete temp file
+    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# Download one submission.
+#   1. Try PDF first. If PDF succeeds -> done.
+#   2. If PDF is unavailable, download BOTH CSV and XML.
+# Returns a comma-separated list of formats successfully saved,
+# or $null if nothing could be downloaded.
 # ---------------------------------------------------------------------------
 function Save-Submission {
     param (
@@ -166,39 +207,37 @@ function Save-Submission {
         [string]$FormFolder
     )
 
-    $submissionId = $Submission.id
+    $submissionId = [string]$Submission.id
     $refId        = if ($Submission.reference_id) { $Submission.reference_id } else { $submissionId }
     $safeName     = Get-SafeName -Name ([string]$refId)
 
-    # Each format is tried in preference order
-    $formats = @(
-        @{ Ext = 'pdf'; Accept = 'application/pdf'  }
-        @{ Ext = 'csv'; Accept = 'text/csv'          }
-        @{ Ext = 'xml'; Accept = 'application/xml'   }
-    )
+    # ---- 1. Try PDF first ------------------------------------------------
+    $pdfOk = Save-SubmissionFormat -SubmissionId $submissionId `
+                                   -FormFolder   $FormFolder `
+                                   -SafeName     $safeName `
+                                   -Extension    'pdf'
 
-    foreach ($fmt in $formats) {
-        $filePath = Join-Path $FormFolder ('{0}.{1}' -f $safeName, $fmt.Ext)
+    if ($pdfOk) {
+        return 'pdf'
+    }
 
-        if (Test-Path $filePath) {
-            Write-Verbose "  [SKIP] $filePath already exists."
-            return $fmt.Ext
-        }
+    # ---- 2. PDF failed -> download BOTH CSV and XML ----------------------
+    $saved = @()
 
-        $downloadUri = '{0}/submissions/{1}.{2}' -f $Script:V3BaseUrl, $submissionId, $fmt.Ext
-        Write-Verbose "  Trying $($fmt.Ext.ToUpper()): $downloadUri"
+    $csvOk = Save-SubmissionFormat -SubmissionId $submissionId `
+                                   -FormFolder   $FormFolder `
+                                   -SafeName     $safeName `
+                                   -Extension    'csv'
+    if ($csvOk) { $saved += 'csv' }
 
-        $tmpFile = $filePath + '.tmp'
-        $ok      = Invoke-GoCanvasFileDownload -Uri $downloadUri -OutFile $tmpFile
+    $xmlOk = Save-SubmissionFormat -SubmissionId $submissionId `
+                                   -FormFolder   $FormFolder `
+                                   -SafeName     $safeName `
+                                   -Extension    'xml'
+    if ($xmlOk) { $saved += 'xml' }
 
-        if ($ok -and (Test-Path $tmpFile) -and (Get-Item $tmpFile).Length -gt 0) {
-            Move-Item -Path $tmpFile -Destination $filePath
-            Write-Verbose "  [OK]   Saved $filePath"
-            return $fmt.Ext
-        }
-
-        # Remove incomplete temp file before trying next format
-        if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+    if ($saved.Count -gt 0) {
+        return ($saved -join ',')
     }
 
     Write-Warning "  [FAIL] Could not download submission $submissionId in any format."
@@ -275,10 +314,15 @@ function Invoke-Main {
             $refId        = if ($sub.reference_id) { $sub.reference_id } else { $submissionId }
             $safeName     = Get-SafeName -Name ([string]$refId)
 
-            # Check whether any format is already on disk (skip entirely if so)
-            $alreadyExists = @('pdf','csv','xml') | Where-Object {
-                Test-Path (Join-Path $formFolder ('{0}.{1}' -f $safeName, $_))
-            }
+            # A submission is considered "already on disk" when EITHER:
+            #   - the PDF is present, OR
+            #   - both the CSV and XML are present (the PDF-unavailable fallback)
+            $pdfPath = Join-Path $formFolder ('{0}.pdf' -f $safeName)
+            $csvPath = Join-Path $formFolder ('{0}.csv' -f $safeName)
+            $xmlPath = Join-Path $formFolder ('{0}.xml' -f $safeName)
+
+            $alreadyExists = (Test-Path $pdfPath) -or
+                             ((Test-Path $csvPath) -and (Test-Path $xmlPath))
 
             if ($alreadyExists) {
                 Write-Verbose "  [SKIP] Submission $submissionId ($refId) already on disk."
