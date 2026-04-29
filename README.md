@@ -92,7 +92,7 @@ plus three computed columns:
 ## How It Works
 
 1. **Authentication** – On first use, the script exchanges your Client ID and Client Secret for a short-lived Bearer token via `POST /api/v3/oauth/token` (OAuth 2.0 Client Credentials flow). The token is cached in memory and automatically refreshed when it is within 60 seconds of expiry.
-2. **List forms** – `GET /api/v3/apps` returns all forms/apps in your account.
+2. **List forms** – `GET /api/v3/forms` returns all forms in your account.
 3. **List submissions** – `GET /api/v3/submissions?app_id=…&page=…&per_page=…` is called repeatedly until all pages are retrieved.
 4. **Download** – For each submission, the script attempts:
    - `GET /api/v3/submissions/{id}.pdf` — if successful, the submission is done.

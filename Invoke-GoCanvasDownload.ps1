@@ -535,8 +535,8 @@ function Invoke-Main {
     # Step 1 – Retrieve the list of all forms / apps
     # ------------------------------------------------------------------
     Write-Host "Fetching list of forms (apps) ..."
-    $appsResponse = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/apps"
-    $apps = if ($appsResponse.apps) { $appsResponse.apps }
+    $appsResponse = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/forms"
+    $apps = if ($appsResponse.forms) { $appsResponse.forms }
             elseif ($appsResponse -is [array]) { $appsResponse }
             else { @() }
 
