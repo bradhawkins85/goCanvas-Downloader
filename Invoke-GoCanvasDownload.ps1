@@ -95,6 +95,10 @@ $Script:JsonSerializationDepth = 10
 # Number of seconds before token expiry at which a fresh token is requested.
 $Script:TokenRefreshBufferSeconds = 60
 
+# Fallback per_page values tried (in order) when the API returns 422 on the
+# first page of a form's submissions.  Some forms reject the default page size.
+$Script:FallbackPageSizes = @(10, 1)
+
 # ---------------------------------------------------------------------------
 # Helper: obtain (and cache) an OAuth 2.0 Bearer token using the
 # Client Credentials flow.  The token is reused until it is within
@@ -404,12 +408,13 @@ function Get-AllSubmissions {
 
     $allSubmissions = [System.Collections.Generic.List[object]]::new()
     $page           = 1
+    $effectivePageSize = $PageSize
 
     do {
         $query = @{
             app_id   = $AppId
             page     = [string]$page
-            per_page = [string]$PageSize
+            per_page = [string]$effectivePageSize
         }
 
         try {
@@ -418,6 +423,19 @@ function Get-AllSubmissions {
         catch [System.Net.WebException] {
             $statusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
             if ($statusCode -eq 422) {
+                # Some forms reject the current page size.  When we are on page 1
+                # (nothing collected yet) try progressively smaller per_page values
+                # before giving up.  On later pages we have already succeeded with
+                # the current page size, so 422 is likely a transient/data problem;
+                # return whatever was collected rather than discarding it.
+                if ($page -eq 1) {
+                    $nextSize = $Script:FallbackPageSizes | Where-Object { $_ -lt $effectivePageSize } | Select-Object -First 1
+                    if ($null -ne $nextSize) {
+                        Write-Warning "  Form $AppId returned 422 with per_page=$effectivePageSize - retrying with per_page=$nextSize."
+                        $effectivePageSize = $nextSize
+                        continue
+                    }
+                }
                 Write-Warning "  Form $AppId returned 422 (Unprocessable Entity) - skipping form (no accessible submissions or form is archived)."
                 return $allSubmissions.ToArray()
             }
@@ -425,9 +443,9 @@ function Get-AllSubmissions {
         }
 
         $rawSubs = Get-ObjectProperty -Object $result -Name 'submissions'
-        $submissions = if ($rawSubs) { $rawSubs }
-                       elseif ($result -is [array]) { $result }
-                       else { @() }
+        $submissions = @(if ($rawSubs) { $rawSubs }
+                         elseif ($result -is [array]) { $result }
+                         else { @() })
 
         foreach ($sub in $submissions) {
             $allSubmissions.Add($sub)
@@ -601,9 +619,9 @@ function Invoke-Main {
     Write-Host "Fetching list of forms (apps) ..."
     $appsResponse = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/forms"
     $rawApps = Get-ObjectProperty -Object $appsResponse -Name 'forms'
-    $apps = if ($rawApps) { $rawApps }
-            elseif ($appsResponse -is [array]) { $appsResponse }
-            else { @() }
+    $apps = @(if ($rawApps) { $rawApps }
+              elseif ($appsResponse -is [array]) { $appsResponse }
+              else { @() })
 
     if ($apps.Count -eq 0) {
         Write-Warning "No forms/apps found. Verify your credentials and API access."
@@ -635,7 +653,7 @@ function Invoke-Main {
         }
 
         # Retrieve all submissions for this form
-        $submissions = Get-AllSubmissions -AppId $appId
+        $submissions = @(Get-AllSubmissions -AppId $appId)
         Write-Host "  Submissions found: $($submissions.Count)"
 
         # Build the per-form submissions index (CSV) as we go
