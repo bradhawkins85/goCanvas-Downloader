@@ -8,6 +8,11 @@
     available for a submission, BOTH the CSV and XML versions are downloaded
     instead. Already-downloaded files are skipped.
 
+    Authentication uses OAuth 2.0 Client Credentials Flow. You must create an
+    OAuth application in your goCanvas profile at
+    https://www.gocanvas.com/my_api_settings and supply the resulting
+    Client ID and Client Secret in the CONFIGURATION section of this script.
+
     Downloaded files are named using the submission's reference id, name,
     user id and status (e.g. "REF001_Site_Inspection_42_complete.pdf").
 
@@ -39,13 +44,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# !! CONFIGURATION — replace these values with your goCanvas credentials !!
+# !! CONFIGURATION — replace these values with your goCanvas OAuth credentials !!
+# Create an OAuth application at https://www.gocanvas.com/my_api_settings
+# and use the Client Credentials flow (server-to-server).
 # ---------------------------------------------------------------------------
-$Script:ApiUsername = 'YOUR_GOCANVAS_EMAIL'
-$Script:ApiPassword = 'YOUR_GOCANVAS_PASSWORD_OR_API_KEY'
+$Script:ClientId     = 'YOUR_CLIENT_ID'
+$Script:ClientSecret = 'YOUR_CLIENT_SECRET'
 # ---------------------------------------------------------------------------
 
 $Script:V3BaseUrl = 'https://api.gocanvas.com/api/v3'
+
+# Internal token cache — populated by Get-BearerToken on first use.
+$Script:AccessToken  = $null
+$Script:TokenExpiry  = [datetime]::MinValue
 
 # Maximum length for a generated base filename (excluding extension).
 $Script:MaxFileNameLength = 150
@@ -54,13 +65,45 @@ $Script:MaxFileNameLength = 150
 # for inclusion in the submissions index CSV.
 $Script:JsonSerializationDepth = 10
 
+# Number of seconds before token expiry at which a fresh token is requested.
+$Script:TokenRefreshBufferSeconds = 60
+
 # ---------------------------------------------------------------------------
-# Helper: build an Authorization header value
+# Helper: obtain (and cache) an OAuth 2.0 Bearer token using the
+# Client Credentials flow.  The token is reused until it is within
+# 60 seconds of expiry, at which point a fresh one is requested.
 # ---------------------------------------------------------------------------
-function Get-BasicAuthHeader {
-    $pair  = '{0}:{1}' -f $Script:ApiUsername, $Script:ApiPassword
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)
-    'Basic ' + [Convert]::ToBase64String($bytes)
+function Get-BearerToken {
+    $now = [datetime]::UtcNow
+
+    if ($Script:AccessToken -and $now -lt $Script:TokenExpiry) {
+        return $Script:AccessToken
+    }
+
+    $tokenUri = "$Script:V3BaseUrl/oauth/token"
+    $body = @{
+        grant_type    = 'client_credentials'
+        client_id     = $Script:ClientId
+        client_secret = $Script:ClientSecret
+        scope         = 'api'
+    }
+
+    try {
+        $response = Invoke-RestMethod -Uri $tokenUri -Method POST -Body $body `
+                        -ContentType 'application/x-www-form-urlencoded'
+    }
+    catch [System.Net.WebException] {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        Write-Error "OAuth token request failed [$statusCode]: $tokenUri"
+        throw
+    }
+
+    $Script:AccessToken = $response.access_token
+    $expiresIn = if ($response.expires_in) { [int]$response.expires_in } else { 3600 }
+    # Subtract the buffer so we refresh before the token expires
+    $Script:TokenExpiry = $now.AddSeconds($expiresIn - $Script:TokenRefreshBufferSeconds)
+
+    return $Script:AccessToken
 }
 
 # ---------------------------------------------------------------------------
@@ -74,7 +117,7 @@ function Invoke-GoCanvasRequest {
     )
 
     $headers = @{
-        Authorization = Get-BasicAuthHeader
+        Authorization = 'Bearer ' + (Get-BearerToken)
         Accept        = 'application/json'
     }
 
@@ -105,7 +148,7 @@ function Invoke-GoCanvasFileDownload {
     )
 
     $headers = @{
-        Authorization = Get-BasicAuthHeader
+        Authorization = 'Bearer ' + (Get-BearerToken)
         Accept        = '*/*'
     }
 
@@ -475,9 +518,9 @@ function Invoke-Main {
     Write-Host ""
 
     # Validate credentials are configured
-    if ($Script:ApiUsername -eq 'YOUR_GOCANVAS_EMAIL' -or
-        $Script:ApiPassword -eq 'YOUR_GOCANVAS_PASSWORD_OR_API_KEY') {
-        Write-Error ('Please update $Script:ApiUsername and $Script:ApiPassword ' +
+    if ($Script:ClientId -eq 'YOUR_CLIENT_ID' -or
+        $Script:ClientSecret -eq 'YOUR_CLIENT_SECRET') {
+        Write-Error ('Please update $Script:ClientId and $Script:ClientSecret ' +
                      'in the script before running.')
         return
     }

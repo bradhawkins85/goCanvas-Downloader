@@ -4,7 +4,7 @@ A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.
 
 ## Features
 
-- Authenticates to the goCanvas API using Basic Authentication (email + password / API key)
+- Authenticates to the goCanvas API using **OAuth 2.0 Client Credentials** flow
 - Retrieves every form (app) available in your goCanvas account
 - Iterates through all submissions for each form, handling API pagination automatically
 - Prefers **PDF** format; if PDF is unavailable, downloads **both** CSV and XML
@@ -18,15 +18,19 @@ A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.
 - Windows PowerShell 5.1 **or** PowerShell 7+
 - Internet access to `https://api.gocanvas.com`
 - A valid goCanvas account with API access
+- An **OAuth application** created in your [goCanvas API settings](https://www.gocanvas.com/my_api_settings)
 
 ## Setup
 
-1. Open `Invoke-GoCanvasDownload.ps1` in a text editor.
-2. Find the **CONFIGURATION** section near the top of the script and replace the placeholder values:
+1. Create an OAuth application in your [goCanvas profile](https://www.gocanvas.com/my_api_settings). Choose the **Client Credentials** flow (server-to-server). Note down the **Client ID** and **Client Secret** that are generated.
+
+2. Open `Invoke-GoCanvasDownload.ps1` in a text editor.
+
+3. Find the **CONFIGURATION** section near the top of the script and replace the placeholder values:
 
 ```powershell
-$Script:ApiUsername = 'YOUR_GOCANVAS_EMAIL'
-$Script:ApiPassword = 'YOUR_GOCANVAS_PASSWORD_OR_API_KEY'
+$Script:ClientId     = 'YOUR_CLIENT_ID'
+$Script:ClientSecret = 'YOUR_CLIENT_SECRET'
 ```
 
 > **Security note:** The credentials are stored directly in the script as described in the requirements. Treat this file as sensitive and avoid committing it with real credentials to source control.
@@ -87,7 +91,7 @@ plus three computed columns:
 
 ## How It Works
 
-1. **Authentication** – Every API request includes an `Authorization: Basic …` header built from your credentials.
+1. **Authentication** – On first use, the script exchanges your Client ID and Client Secret for a short-lived Bearer token via `POST /api/v3/oauth/token` (OAuth 2.0 Client Credentials flow). The token is cached in memory and automatically refreshed when it is within 60 seconds of expiry.
 2. **List forms** – `GET /api/v3/apps` returns all forms/apps in your account.
 3. **List submissions** – `GET /api/v3/submissions?app_id=…&page=…&per_page=…` is called repeatedly until all pages are retrieved.
 4. **Download** – For each submission, the script attempts:
