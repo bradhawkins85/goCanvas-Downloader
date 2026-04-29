@@ -587,17 +587,13 @@ function Save-Submission {
     $csvPath = Join-Path $FormFolder ('{0}.csv' -f $safeName)
 
     # ---- Already on disk? ------------------------------------------------
+    # Only a previously downloaded PDF counts as "done". If only a CSV
+    # exists (e.g. from a prior run where PDF generation failed), we still
+    # attempt the PDF again so the higher-fidelity report can be obtained.
     if (Test-Path $pdfPath) {
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($pdfPath))
-            Status   = 'Skipped'
-        }
-    }
-    if (Test-Path $csvPath) {
-        return [pscustomobject]@{
-            BaseName = $safeName
-            Files    = @([System.IO.Path]::GetFileName($csvPath))
             Status   = 'Skipped'
         }
     }
@@ -609,6 +605,11 @@ function Save-Submission {
                                    -Extension    'pdf'
 
     if ($pdfOk) {
+        # Clean up any stale CSV fallback from a prior run now that the
+        # higher-fidelity PDF report is available.
+        if (Test-Path $csvPath) {
+            Remove-Item $csvPath -Force -ErrorAction SilentlyContinue
+        }
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($pdfPath))

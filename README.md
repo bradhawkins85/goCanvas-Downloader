@@ -101,7 +101,7 @@ plus three computed columns:
    - `GET /api/v3/submissions/{id}/pdf` — generates and downloads the default PDF report (see the [Retrieve the Default Report](https://api.gocanvas.com/api/v3/docs#retrieve-the-default-report) docs). On success, the submission is done.
    - If PDF generation fails, it falls back to:
      - `GET /api/v3/submissions/{id}.csv` — saved with a `.csv` extension.
-5. **Skip existing** – A submission is treated as already downloaded (and skipped) when either the PDF or the CSV already exists on disk.
+5. **Skip existing** – A submission is treated as already downloaded (and skipped) only when its PDF already exists on disk. If only a CSV from a prior fallback exists, the script will still attempt PDF generation again; on success the stale CSV is removed.
 6. **Index** – After processing each form, a `_submissions_index.csv` is written into the form folder containing every submission record returned by the API together with its on-disk filename(s) and status.
 
 ## License
