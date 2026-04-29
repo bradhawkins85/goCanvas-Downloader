@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Connects to the goCanvas API v3, retrieves all available submissions across
-    all forms/apps, and downloads each submission as a PDF. If a PDF is not
-    available for a submission, BOTH the CSV and XML versions are downloaded
-    instead. Already-downloaded files are skipped.
+    all forms/apps, and downloads each submission as a PDF using the documented
+    "default report" endpoint (`GET /api/v3/submissions/{id}/pdf`). If PDF
+    generation fails for a submission, the CSV version is downloaded instead
+    (saved with a `.csv` extension). Already-downloaded files are skipped.
 
     Authentication uses OAuth 2.0 Client Credentials Flow. You must create an
     OAuth application in your goCanvas profile at
@@ -175,7 +176,7 @@ function Invoke-GoCanvasRequest {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: download a binary file (PDF / CSV / XML)
+# Helper: download a binary file (PDF / CSV)
 # ---------------------------------------------------------------------------
 function Invoke-GoCanvasFileDownload {
     param (
@@ -538,7 +539,15 @@ function Save-SubmissionFormat {
         return $true
     }
 
-    $downloadUri = '{0}/submissions/{1}.{2}' -f $Script:V3BaseUrl, $SubmissionId, $Extension
+    # The PDF endpoint generates the default Report (per the v3 API docs) and
+    # is exposed as a path segment, not as a file extension. All other formats
+    # (e.g. csv) continue to use the legacy `.{ext}` URL form.
+    if ($Extension -ieq 'pdf') {
+        $downloadUri = '{0}/submissions/{1}/pdf' -f $Script:V3BaseUrl, $SubmissionId
+    }
+    else {
+        $downloadUri = '{0}/submissions/{1}.{2}' -f $Script:V3BaseUrl, $SubmissionId, $Extension
+    }
     Write-Verbose "  Trying $($Extension.ToUpper()): $downloadUri"
 
     $tmpFile = $filePath + '.tmp'
@@ -557,8 +566,10 @@ function Save-SubmissionFormat {
 
 # ---------------------------------------------------------------------------
 # Download one submission.
-#   1. Try PDF first. If PDF succeeds -> done.
-#   2. If PDF is unavailable, download BOTH CSV and XML.
+#   1. Try to generate the default PDF report
+#      (`GET /api/v3/submissions/{id}/pdf`). If it succeeds -> done.
+#   2. If PDF generation fails, fall back to CSV
+#      (`GET /api/v3/submissions/{id}.csv`) saved with a `.csv` extension.
 # Returns an object describing what was saved:
 #   @{ BaseName = 'REF_NAME_USER_STATUS'; Files = @('REF_….pdf'); Status = 'Downloaded' }
 # Status is one of 'Downloaded', 'Skipped' (already on disk) or 'Failed'.
@@ -574,38 +585,31 @@ function Save-Submission {
 
     $pdfPath = Join-Path $FormFolder ('{0}.pdf' -f $safeName)
     $csvPath = Join-Path $FormFolder ('{0}.csv' -f $safeName)
-    $xmlPath = Join-Path $FormFolder ('{0}.xml' -f $safeName)
 
     # ---- Already on disk? ------------------------------------------------
-    $pdfExists = Test-Path $pdfPath
-    $csvExists = Test-Path $csvPath
-    $xmlExists = Test-Path $xmlPath
-
-    if ($pdfExists) {
+    # Only a previously downloaded PDF counts as "done". If only a CSV
+    # exists (e.g. from a prior run where PDF generation failed), we still
+    # attempt the PDF again so the higher-fidelity report can be obtained.
+    if (Test-Path $pdfPath) {
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($pdfPath))
             Status   = 'Skipped'
         }
     }
-    if ($csvExists -and $xmlExists) {
-        return [pscustomobject]@{
-            BaseName = $safeName
-            Files    = @(
-                [System.IO.Path]::GetFileName($csvPath),
-                [System.IO.Path]::GetFileName($xmlPath)
-            )
-            Status   = 'Skipped'
-        }
-    }
 
-    # ---- 1. Try PDF first ------------------------------------------------
+    # ---- 1. Try the default PDF report first -----------------------------
     $pdfOk = Save-SubmissionFormat -SubmissionId $submissionId `
                                    -FormFolder   $FormFolder `
                                    -SafeName     $safeName `
                                    -Extension    'pdf'
 
     if ($pdfOk) {
+        # Clean up any stale CSV fallback from a prior run now that the
+        # higher-fidelity PDF report is available.
+        if (Test-Path $csvPath) {
+            Remove-Item $csvPath -Force -ErrorAction SilentlyContinue
+        }
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($pdfPath))
@@ -613,25 +617,16 @@ function Save-Submission {
         }
     }
 
-    # ---- 2. PDF failed -> download BOTH CSV and XML ----------------------
-    $savedFiles = @()
-
+    # ---- 2. PDF failed -> fall back to CSV (saved with .csv extension) --
     $csvOk = Save-SubmissionFormat -SubmissionId $submissionId `
                                    -FormFolder   $FormFolder `
                                    -SafeName     $safeName `
                                    -Extension    'csv'
-    if ($csvOk) { $savedFiles += [System.IO.Path]::GetFileName($csvPath) }
 
-    $xmlOk = Save-SubmissionFormat -SubmissionId $submissionId `
-                                   -FormFolder   $FormFolder `
-                                   -SafeName     $safeName `
-                                   -Extension    'xml'
-    if ($xmlOk) { $savedFiles += [System.IO.Path]::GetFileName($xmlPath) }
-
-    if ($savedFiles.Count -gt 0) {
+    if ($csvOk) {
         return [pscustomobject]@{
             BaseName = $safeName
-            Files    = $savedFiles
+            Files    = @([System.IO.Path]::GetFileName($csvPath))
             Status   = 'Downloaded'
         }
     }

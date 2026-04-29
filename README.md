@@ -1,13 +1,13 @@
 # goCanvas-Downloader
 
-A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.com/api/v3/docs) and exports all available submission data. PDFs are downloaded where available; when a PDF is not available, **both** the CSV and XML versions are downloaded instead.
+A PowerShell script that connects to the [goCanvas API v3](https://api.gocanvas.com/api/v3/docs) and exports all available submission data. Each submission is downloaded as a PDF using the [default report endpoint](https://api.gocanvas.com/api/v3/docs#retrieve-the-default-report); if PDF generation fails, the CSV version is downloaded instead (saved with a `.csv` extension).
 
 ## Features
 
 - Authenticates to the goCanvas API using **OAuth 2.0 Client Credentials** flow
 - Retrieves every form (app) available in your goCanvas account
 - Iterates through all submissions for each form, handling API pagination automatically
-- Prefers **PDF** format; if PDF is unavailable, downloads **both** CSV and XML
+- Prefers **PDF** (via the documented "default report" endpoint); if PDF generation fails, falls back to **CSV** (saved with a `.csv` extension)
 - Names files using the submission's **reference id**, **name**, **user id** and **status**
 - Writes a per-form **`_submissions_index.csv`** containing every field returned by the API for each submission, plus the resulting filename(s)
 - Organises downloads into sub-folders named after each form
@@ -68,13 +68,11 @@ GoCanvasDownloads\
 │   ├── _submissions_index.csv
 │   ├── REF001_Site_Inspection_42_complete.pdf
 │   ├── REF002_Site_Inspection_42_complete.pdf
-│   ├── REF003_Site_Inspection_17_draft.csv     ← PDF was unavailable, so both formats downloaded
-│   └── REF003_Site_Inspection_17_draft.xml
+│   └── REF003_Site_Inspection_17_draft.csv     ← PDF generation failed, fell back to CSV
 └── Form Name B\
     ├── _submissions_index.csv
     ├── SUB_456_Vehicle_Check_8_complete.pdf
-    ├── SUB_789_Vehicle_Check_8_complete.csv    ← PDF unavailable
-    └── SUB_789_Vehicle_Check_8_complete.xml
+    └── SUB_789_Vehicle_Check_8_complete.csv    ← PDF generation failed, fell back to CSV
 ```
 
 File names follow the pattern `{reference_id}_{name}_{user_id}_{status}.{ext}`.
@@ -91,7 +89,7 @@ plus three computed columns:
 | Column           | Description                                                              |
 |------------------|--------------------------------------------------------------------------|
 | `BaseFileName`   | The sanitised base filename (without extension) used on disk             |
-| `Files`          | Semicolon-separated list of the file(s) saved (e.g. `REF.pdf` or `REF.csv;REF.xml`) |
+| `Files`          | Semicolon-separated list of the file(s) saved (e.g. `REF.pdf` or `REF.csv`) |
 | `DownloadStatus` | `Downloaded`, `Skipped` (already on disk), or `Failed`                  |
 
 ## How It Works
@@ -100,11 +98,10 @@ plus three computed columns:
 2. **List forms** – `GET /api/v3/forms` returns all forms in your account.
 3. **List submissions** – `GET /api/v3/submissions?form_id=…&page=…` is called repeatedly until all pages are retrieved. (The v3 API requires `form_id` and uses a fixed page size of 100; it does not accept a `per_page` parameter.)
 4. **Download** – For each submission, the script attempts:
-   - `GET /api/v3/submissions/{id}.pdf` — if successful, the submission is done.
-   - If PDF is unavailable, it then downloads **both**:
-     - `GET /api/v3/submissions/{id}.csv`
-     - `GET /api/v3/submissions/{id}.xml`
-5. **Skip existing** – A submission is treated as already downloaded (and skipped) when either the PDF exists, or both the CSV and XML exist on disk.
+   - `GET /api/v3/submissions/{id}/pdf` — generates and downloads the default PDF report (see the [Retrieve the Default Report](https://api.gocanvas.com/api/v3/docs#retrieve-the-default-report) docs). On success, the submission is done.
+   - If PDF generation fails, it falls back to:
+     - `GET /api/v3/submissions/{id}.csv` — saved with a `.csv` extension.
+5. **Skip existing** – A submission is treated as already downloaded (and skipped) only when its PDF already exists on disk. If only a CSV from a prior fallback exists, the script will still attempt PDF generation again; on success the stale CSV is removed.
 6. **Index** – After processing each form, a `_submissions_index.csv` is written into the form folder containing every submission record returned by the API together with its on-disk filename(s) and status.
 
 ## License
