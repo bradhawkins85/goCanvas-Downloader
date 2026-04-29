@@ -459,6 +459,11 @@ function Get-AllSubmissions {
     $page           = 1
     $effectivePageSize = $PageSize
     $totalExpected  = $null
+    # Initialise the loop-control variables so that a `continue` from the
+    # 422 retry path (which jumps directly to the `while` test before these
+    # are otherwise assigned) does not fail under Set-StrictMode.
+    $morePages      = $true
+    $submissions    = @('__retry__')
 
     do {
         $query = @{
