@@ -98,8 +98,9 @@ function Get-BearerToken {
         throw
     }
 
-    $Script:AccessToken = $response.access_token
-    $expiresIn = if ($response.expires_in) { [int]$response.expires_in } else { 3600 }
+    $Script:AccessToken = Get-ObjectProperty -Object $response -Name 'access_token'
+    $rawExpiry = Get-ObjectProperty -Object $response -Name 'expires_in'
+    $expiresIn = if ($rawExpiry) { [int]$rawExpiry } else { 3600 }
     # Subtract the buffer so we refresh before the token expires
     $Script:TokenExpiry = $now.AddSeconds($expiresIn - $Script:TokenRefreshBufferSeconds)
 
@@ -176,6 +177,30 @@ function Get-SafeName {
     # Replace invalid chars and collapse runs of whitespace/underscores
     $clean   = ($Name -replace $re, '_') -replace '\s+', '_' -replace '_+', '_'
     $clean.Trim('_', ' ', '.')
+}
+
+# ---------------------------------------------------------------------------
+# Safely read a named property from a PSCustomObject or hashtable returned by
+# the API.  Unlike direct property access, this is safe under
+# Set-StrictMode -Version Latest because it checks for existence first.
+# Returns $null when the property is absent or its value is null/empty.
+# ---------------------------------------------------------------------------
+function Get-ObjectProperty {
+    param (
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) { return $null }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { return $Object[$Name] }
+        return $null
+    }
+
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $null
 }
 
 # ---------------------------------------------------------------------------
@@ -362,7 +387,8 @@ function Get-AllSubmissions {
 
         $result = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/submissions" -Query $query
 
-        $submissions = if ($result.submissions) { $result.submissions }
+        $rawSubs = Get-ObjectProperty -Object $result -Name 'submissions'
+        $submissions = if ($rawSubs) { $rawSubs }
                        elseif ($result -is [array]) { $result }
                        else { @() }
 
@@ -371,7 +397,8 @@ function Get-AllSubmissions {
         }
 
         # Determine whether there are more pages
-        $total      = if ($result.total_count) { [int]$result.total_count } else { $allSubmissions.Count }
+        $rawTotal   = Get-ObjectProperty -Object $result -Name 'total_count'
+        $total      = if ($rawTotal) { [int]$rawTotal } else { $allSubmissions.Count }
         $fetched    = $allSubmissions.Count
         $morePages  = $fetched -lt $total
         $page++
@@ -536,7 +563,8 @@ function Invoke-Main {
     # ------------------------------------------------------------------
     Write-Host "Fetching list of forms (apps) ..."
     $appsResponse = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/forms"
-    $apps = if ($appsResponse.forms) { $appsResponse.forms }
+    $rawApps = Get-ObjectProperty -Object $appsResponse -Name 'forms'
+    $apps = if ($rawApps) { $rawApps }
             elseif ($appsResponse -is [array]) { $appsResponse }
             else { @() }
 
@@ -555,8 +583,9 @@ function Invoke-Main {
     # Step 2 – Process each form
     # ------------------------------------------------------------------
     foreach ($app in $apps) {
-        $appId   = $app.id
-        $appName = if ($app.name) { $app.name } else { "App_$appId" }
+        $appId   = Get-ObjectProperty -Object $app -Name 'id'
+        $rawName = Get-ObjectProperty -Object $app -Name 'name'
+        $appName = if ($rawName) { $rawName } else { "App_$appId" }
         $safeApp = Get-SafeName -Name $appName
 
         Write-Host ""
