@@ -412,7 +412,17 @@ function Get-AllSubmissions {
             per_page = [string]$PageSize
         }
 
-        $result = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/submissions" -Query $query
+        try {
+            $result = Invoke-GoCanvasRequest -Uri "$Script:V3BaseUrl/submissions" -Query $query
+        }
+        catch [System.Net.WebException] {
+            $statusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+            if ($statusCode -eq 422) {
+                Write-Warning "  Form $AppId returned 422 (Unprocessable Entity) - skipping form (no accessible submissions or form is archived)."
+                return $allSubmissions.ToArray()
+            }
+            throw
+        }
 
         $rawSubs = Get-ObjectProperty -Object $result -Name 'submissions'
         $submissions = if ($rawSubs) { $rawSubs }
