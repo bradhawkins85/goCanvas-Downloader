@@ -401,7 +401,7 @@ function Write-SubmissionsIndex {
         [pscustomobject]$obj
     }
 
-    $normalised | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+    $normalised | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding UTF8
 }
 
 # ---------------------------------------------------------------------------
@@ -534,7 +534,7 @@ function Save-SubmissionFormat {
 
     $filePath = Join-Path $FormFolder ('{0}.{1}' -f $SafeName, $Extension)
 
-    if (Test-Path $filePath) {
+    if (Test-Path -LiteralPath $filePath) {
         Write-Verbose "  [SKIP] $filePath already exists."
         return $true
     }
@@ -553,14 +553,23 @@ function Save-SubmissionFormat {
     $tmpFile = $filePath + '.tmp'
     $ok      = Invoke-GoCanvasFileDownload -Uri $downloadUri -OutFile $tmpFile
 
-    if ($ok -and (Test-Path $tmpFile) -and (Get-Item $tmpFile).Length -gt 0) {
-        Move-Item -Path $tmpFile -Destination $filePath
+    if ($ok -and (Test-Path -LiteralPath $tmpFile) -and (Get-Item -LiteralPath $tmpFile).Length -gt 0) {
+        # Guard against overwriting a file that arrived on disk after the
+        # initial existence check above (e.g. a concurrent run).  This also
+        # ensures the on-disk timestamp is never updated for a file that was
+        # already present.
+        if (Test-Path -LiteralPath $filePath) {
+            Remove-Item -LiteralPath $tmpFile -Force
+            Write-Verbose "  [SKIP] $filePath already exists."
+            return $true
+        }
+        Move-Item -LiteralPath $tmpFile -Destination $filePath
         Write-Verbose "  [OK]   Saved $filePath"
         return $true
     }
 
     # Remove incomplete temp file
-    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+    if (Test-Path -LiteralPath $tmpFile) { Remove-Item -LiteralPath $tmpFile -Force }
     return $false
 }
 
@@ -590,7 +599,7 @@ function Save-Submission {
     # Only a previously downloaded PDF counts as "done". If only a CSV
     # exists (e.g. from a prior run where PDF generation failed), we still
     # attempt the PDF again so the higher-fidelity report can be obtained.
-    if (Test-Path $pdfPath) {
+    if (Test-Path -LiteralPath $pdfPath) {
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($pdfPath))
@@ -607,8 +616,8 @@ function Save-Submission {
     if ($pdfOk) {
         # Clean up any stale CSV fallback from a prior run now that the
         # higher-fidelity PDF report is available.
-        if (Test-Path $csvPath) {
-            Remove-Item $csvPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $csvPath) {
+            Remove-Item -LiteralPath $csvPath -Force -ErrorAction SilentlyContinue
         }
         return [pscustomobject]@{
             BaseName = $safeName
@@ -618,6 +627,7 @@ function Save-Submission {
     }
 
     # ---- 2. PDF failed -> fall back to CSV (saved with .csv extension) --
+    $csvExisted = Test-Path -LiteralPath $csvPath
     $csvOk = Save-SubmissionFormat -SubmissionId $submissionId `
                                    -FormFolder   $FormFolder `
                                    -SafeName     $safeName `
@@ -627,7 +637,7 @@ function Save-Submission {
         return [pscustomobject]@{
             BaseName = $safeName
             Files    = @([System.IO.Path]::GetFileName($csvPath))
-            Status   = 'Downloaded'
+            Status   = if ($csvExisted) { 'Skipped' } else { 'Downloaded' }
         }
     }
 
@@ -658,8 +668,8 @@ function Invoke-Main {
     }
 
     # Ensure output directory exists
-    if (-not (Test-Path $OutputPath)) {
-        New-Item -ItemType Directory -Path $OutputPath | Out-Null
+    if (-not (Test-Path -LiteralPath $OutputPath)) {
+        New-Item -ItemType Directory -LiteralPath $OutputPath | Out-Null
         Write-Host "Created output folder: $OutputPath"
     }
 
@@ -694,8 +704,8 @@ function Invoke-Main {
 
         # Create a sub-folder for this form
         $formFolder = Join-Path $OutputPath $safeApp
-        if (-not (Test-Path $formFolder)) {
-            New-Item -ItemType Directory -Path $formFolder | Out-Null
+        if (-not (Test-Path -LiteralPath $formFolder)) {
+            New-Item -ItemType Directory -LiteralPath $formFolder | Out-Null
         }
 
         # Retrieve all submissions for this form
