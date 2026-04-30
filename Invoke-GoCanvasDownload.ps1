@@ -401,7 +401,7 @@ function Write-SubmissionsIndex {
         [pscustomobject]$obj
     }
 
-    $normalised | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding UTF8
+    $normalised | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
 }
 
 # ---------------------------------------------------------------------------
@@ -669,7 +669,7 @@ function Invoke-Main {
 
     # Ensure output directory exists
     if (-not (Test-Path -LiteralPath $OutputPath)) {
-        New-Item -ItemType Directory -LiteralPath $OutputPath | Out-Null
+        New-Item -ItemType Directory -Path $OutputPath | Out-Null
         Write-Host "Created output folder: $OutputPath"
     }
 
@@ -705,7 +705,7 @@ function Invoke-Main {
         # Create a sub-folder for this form
         $formFolder = Join-Path $OutputPath $safeApp
         if (-not (Test-Path -LiteralPath $formFolder)) {
-            New-Item -ItemType Directory -LiteralPath $formFolder | Out-Null
+            New-Item -ItemType Directory -Path $formFolder | Out-Null
         }
 
         # Retrieve all submissions for this form
