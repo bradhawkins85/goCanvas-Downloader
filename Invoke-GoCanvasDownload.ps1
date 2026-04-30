@@ -534,7 +534,7 @@ function Save-SubmissionFormat {
 
     $filePath = Join-Path $FormFolder ('{0}.{1}' -f $SafeName, $Extension)
 
-    if (Test-Path $filePath) {
+    if (Test-Path -LiteralPath $filePath) {
         Write-Verbose "  [SKIP] $filePath already exists."
         return $true
     }
@@ -553,14 +553,23 @@ function Save-SubmissionFormat {
     $tmpFile = $filePath + '.tmp'
     $ok      = Invoke-GoCanvasFileDownload -Uri $downloadUri -OutFile $tmpFile
 
-    if ($ok -and (Test-Path $tmpFile) -and (Get-Item $tmpFile).Length -gt 0) {
-        Move-Item -Path $tmpFile -Destination $filePath
+    if ($ok -and (Test-Path -LiteralPath $tmpFile) -and (Get-Item -LiteralPath $tmpFile).Length -gt 0) {
+        # Guard against overwriting a file that arrived on disk after the
+        # initial existence check above (e.g. a concurrent run).  This also
+        # ensures the on-disk timestamp is never updated for a file that was
+        # already present.
+        if (Test-Path -LiteralPath $filePath) {
+            Remove-Item -LiteralPath $tmpFile -Force
+            Write-Verbose "  [SKIP] $filePath already exists."
+            return $true
+        }
+        Move-Item -LiteralPath $tmpFile -Destination $filePath
         Write-Verbose "  [OK]   Saved $filePath"
         return $true
     }
 
     # Remove incomplete temp file
-    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+    if (Test-Path -LiteralPath $tmpFile) { Remove-Item -LiteralPath $tmpFile -Force }
     return $false
 }
 
